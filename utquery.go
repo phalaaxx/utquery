@@ -80,6 +80,7 @@ type ServerInfo struct {
 	SQPort     int32
 	Name       string
 	Map        string
+	MapImage   string
 	GameType   string
 	Players    int32
 	MaxPlayers int32
