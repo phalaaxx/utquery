@@ -8,6 +8,7 @@ package utquery
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -20,46 +21,45 @@ const QRY_PLAYERSINFO = "\x80\x00\x00\x00\x02"
 
 /* data parser */
 type Buffer struct {
-	data   [2048]byte
-	n      int
-	offset int
+	data *bytes.Buffer
 }
 
 /* read data from socket */
 func (b *Buffer) ReceiveData(conn net.Conn) error {
-	if n, err := conn.Read(b.data[0:]); err != nil {
+	buffer := make([]byte, 2048)
+	if n, err := conn.Read(buffer); err != nil {
 		return err
 	} else {
-		b.n = n
+		b.data = bytes.NewBuffer(buffer[0:n])
 	}
 	return nil
 }
 
 /* parse integer from buffer */
 func (b *Buffer) GetInt() (ret int32) {
-	binary.Read(bytes.NewBuffer(b.data[b.offset:]), binary.LittleEndian, &ret)
-	b.offset += 4
+	binary.Read(b.data, binary.LittleEndian, &ret)
 	return ret
 }
 
 /* parse string from buffer */
 func (b *Buffer) GetString() (ret string) {
-	length := int(b.data[b.offset])
-	if length == 0 {
-		b.offset += 1
+	length, err := b.data.ReadByte()
+	if err != nil || length == 0 {
 		return ret
 	}
-	ret = string(b.data[b.offset+1 : b.offset+length])
-	b.offset += length + 1
-	if bytes.Contains([]byte(ret), []byte("\x1b\n\xf5\n")) {
-		ret = ret[4:]
+	StrData := make([]byte, length)
+	if _, err := io.ReadFull(b.data, StrData); err != nil {
+		return ret
 	}
-	return ret
+	if bytes.Contains(StrData, []byte("\x1b\n\xf5\n")) {
+		StrData = StrData[4:]
+	}
+	return string(StrData)
 }
 
 /* true if there is more data to parse */
 func (b *Buffer) HasData() bool {
-	return b.offset != b.n
+	return b.data.Len() != 0
 }
 
 /* Player Info structure */
@@ -116,11 +116,12 @@ func (q *ServerInfo) Connect(serverAddr string) error {
 /* receive and parse data */
 func (q *ServerInfo) ReceiveData(read chan bool) {
 	for i := 0; i < 3; i++ {
-		b := &Buffer{offset: 5}
+		b := new(Buffer)
 		if err := b.ReceiveData(q.conn); err != nil {
 			read <- false
 		}
-		if bytes.Contains(b.data[0:], []byte(QRY_SERVERINFO)) {
+		if bytes.Contains(b.data.Bytes()[0:], []byte(QRY_SERVERINFO)) {
+			b.data.Next(len(QRY_SERVERINFO))
 			q.ID = b.GetInt()
 			q.IP = b.GetString()
 			q.Port = b.GetInt()
@@ -134,13 +135,15 @@ func (q *ServerInfo) ReceiveData(read chan bool) {
 			q.Flags = b.GetInt()
 			q.SkillLevel = b.GetInt()
 		}
-		if bytes.Contains(b.data[0:], []byte(QRY_GAMEINFO)) {
+		if bytes.Contains(b.data.Bytes()[0:], []byte(QRY_GAMEINFO)) {
+			b.data.Next(len(QRY_GAMEINFO))
 			q.GameInfo = make(map[string]string)
 			for b.HasData() {
 				q.GameInfo[b.GetString()] = b.GetString()
 			}
 		}
-		if bytes.Contains(b.data[0:], []byte(QRY_PLAYERSINFO)) {
+		if bytes.Contains(b.data.Bytes()[0:], []byte(QRY_PLAYERSINFO)) {
+			b.data.Next(len(QRY_PLAYERSINFO))
 			for b.HasData() {
 				p := &PlayersInfo{
 					ID:      b.GetInt(),
